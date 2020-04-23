@@ -32,6 +32,7 @@
 #include "apriltag_ros/continuous_detector.h"
 
 #include <pluginlib/class_list_macros.h>
+#include <sensor_msgs/CompressedImage.h>
 
 PLUGINLIB_EXPORT_CLASS(apriltag_ros::ContinuousDetector, nodelet::Nodelet);
 
@@ -48,14 +49,18 @@ void ContinuousDetector::onInit ()
   ros::NodeHandle& pnh = getPrivateNodeHandle();
 
   tag_detector_ = std::shared_ptr<TagDetector>(new TagDetector(pnh));
-  draw_tag_detections_image_ = getAprilTagOption<bool>(pnh, 
+  draw_tag_detections_image_ = getAprilTagOption<bool>(pnh,
       "publish_tag_detections_image", false);
   it_ = std::shared_ptr<image_transport::ImageTransport>(
       new image_transport::ImageTransport(nh));
 
   camera_image_subscriber_ =
-      it_->subscribeCamera("image_rect", 1,
-                          &ContinuousDetector::imageCallback, this);
+      nh.subscribe<sensor_msgs::CompressedImage>("image_rect", 1,
+                                                 &ContinuousDetector::imageCallback, this);
+
+  camera_info_subscriber_ =
+      nh.subscribe<sensor_msgs::CameraInfo>("camera_info", 1,
+                                                 &ContinuousDetector::cameraInfoCallback, this);
   tag_detections_publisher_ =
       nh.advertise<AprilTagDetectionArray>("tag_detections", 1);
   if (draw_tag_detections_image_)
@@ -64,15 +69,13 @@ void ContinuousDetector::onInit ()
   }
 }
 
-void ContinuousDetector::imageCallback (
-    const sensor_msgs::ImageConstPtr& image_rect,
-    const sensor_msgs::CameraInfoConstPtr& camera_info)
+void ContinuousDetector::imageCallback(const sensor_msgs::CompressedImageConstPtr& image_rect)
 {
   // Convert ROS's sensor_msgs::Image to cv_bridge::CvImagePtr in order to run
-  // AprilTag 2 on the iamge
+  // AprilTag 2 on the image
   try
   {
-    cv_image_ = cv_bridge::toCvCopy(image_rect, image_rect->encoding);
+    cv_image_ = cv_bridge::toCvCopy(image_rect, sensor_msgs::image_encodings::BGR8);
   }
   catch (cv_bridge::Exception& e)
   {
@@ -80,9 +83,16 @@ void ContinuousDetector::imageCallback (
     return;
   }
 
+  if (!camera_info_)
+  {
+    ROS_WARN_THROTTLE(15, "AprilTag detector is waiting for "
+                          "sensor_msgs::CameraInfo.");
+    return;
+  }
+
   // Publish detected tags in the image by AprilTag 2
   tag_detections_publisher_.publish(
-      tag_detector_->detectTags(cv_image_,camera_info));
+      tag_detector_->detectTags(cv_image_, camera_info_));
 
   // Publish the camera image overlaid by outlines of the detected tags and
   // their payload values
@@ -93,4 +103,9 @@ void ContinuousDetector::imageCallback (
   }
 }
 
+void ContinuousDetector::cameraInfoCallback(
+    const sensor_msgs::CameraInfoConstPtr& camera_info)
+{
+  camera_info_ = camera_info;
+}
 } // namespace apriltag_ros
